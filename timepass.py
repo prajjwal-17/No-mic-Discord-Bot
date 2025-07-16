@@ -1,19 +1,18 @@
 import os
 import subprocess
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands, FFmpegPCMAudio
 from dotenv import load_dotenv
 import edge_tts
 import asyncio
+from datetime import datetime, timedelta
 
 # Load environment variables
 load_dotenv()
-
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
 NO_MIC_CHANNEL_ID = int(os.getenv("NO_MIC_CHANNEL_ID"))
-VC_CHANNEL_ID = int(os.getenv("VC_CHANNEL_ID"))
 
 # Set up intents
 intents = discord.Intents.default()
@@ -25,6 +24,7 @@ intents.voice_states = True
 class MyBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
+        self.last_active = {}  # track last played time per guild
 
     async def setup_hook(self):
         guild = discord.Object(id=GUILD_ID)
@@ -37,14 +37,14 @@ bot = MyBot()
 @bot.event
 async def on_ready():
     print(f"{bot.user} is ready!")
+    check_inactive.start()
 
-# Generate TTS and stretch it to 6 seconds
+# Generate and stretch voice to 6 seconds
 async def generate_stretched_voice(text, filename="nadeem.mp3", duration=6):
-    # Step 1: Generate TTS
     tts = edge_tts.Communicate(text, voice="en-IN-PrabhatNeural", rate="+10%")
     await tts.save(filename)
 
-    # Step 2: Stretch to 6s using FFmpeg
+    # Stretch using FFmpeg
     stretched = "nadeem_stretched.mp3"
     subprocess.run([
         "ffmpeg", "-y", "-i", filename,
@@ -53,7 +53,7 @@ async def generate_stretched_voice(text, filename="nadeem.mp3", duration=6):
     ])
     return stretched
 
-# Mix voice + tune into final file
+# Mix voice + tune
 def mix_with_tune(voice_file, tune_file="tune.mp3", output="combined.mp3"):
     subprocess.run([
         "ffmpeg", "-y",
@@ -64,14 +64,34 @@ def mix_with_tune(voice_file, tune_file="tune.mp3", output="combined.mp3"):
         output
     ])
 
-# TEXT CHANNEL TTS (unchanged, no music)
+# Update last activity
+def update_last_active(guild_id):
+    bot.last_active[guild_id] = datetime.utcnow()
+
+# Inactivity checker (runs every 60s)
+@tasks.loop(seconds=60)
+async def check_inactive():
+    for guild in bot.guilds:
+        vc = guild.voice_client
+        if vc and not vc.is_playing():
+            last_time = bot.last_active.get(guild.id)
+            if last_time and datetime.utcnow() - last_time > timedelta(minutes=5):
+                await vc.disconnect()
+                print(f"Disconnected from {guild.name} due to 5 minutes of inactivity.")
+
+# Text channel message trigger (no music)
 @bot.event
 async def on_message(message):
     if message.channel.id != NO_MIC_CHANNEL_ID or message.author.bot:
         return
 
     print(f"Received message from {message.author}: {message.content}")
-    vc_channel = message.guild.get_channel(VC_CHANNEL_ID)
+
+    if not message.author.voice or not message.author.voice.channel:
+        await message.channel.send("Join a voice channel first.")
+        return
+
+    vc_channel = message.author.voice.channel
 
     if not message.guild.voice_client:
         await vc_channel.connect()
@@ -81,44 +101,39 @@ async def on_message(message):
 
     voice_client = message.guild.voice_client
     if not voice_client.is_playing():
-        audio = FFmpegPCMAudio("voice.mp3")
-        voice_client.play(audio)
+        update_last_active(message.guild.id)
+        voice_client.play(FFmpegPCMAudio("voice.mp3"))
 
     await bot.process_commands(message)
 
-# SLASH COMMAND with tune + synced voice
+# Slash command with synced music + TTS
 @bot.tree.command(name="connect", description="Nadeem Man will join and speak.")
 async def connect(interaction: discord.Interaction):
-    vc_channel = interaction.guild.get_channel(VC_CHANNEL_ID)
-
-    if vc_channel is None:
-        await interaction.response.send_message("Voice channel not found.", ephemeral=True)
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.response.send_message("You must be in a voice channel to use this.", ephemeral=True)
         return
+
+    vc_channel = interaction.user.voice.channel
 
     if not interaction.guild.voice_client:
         await vc_channel.connect()
 
-    await interaction.response.send_message("I am Nadeem Man at your service. 🔊")
+    await interaction.response.send_message("I am Nadeem Man , at your service. Speak your heart out. 🔊")
 
-    # Generate 6-second stretched voice
-    text = "I am Nadeem Man at your service"
+    text = "I am Nadeem Man ,  at your service. Speak your heart out."
     stretched_file = await generate_stretched_voice(text)
-
-    # Mix it with your 6-sec tune.mp3
     mix_with_tune(stretched_file, "tune.mp3", "combined.mp3")
 
-    # Play it
     vc = interaction.guild.voice_client
     if not vc.is_playing():
-        audio = FFmpegPCMAudio("combined.mp3")
-        vc.play(audio)
+        update_last_active(interaction.guild.id)
+        vc.play(FFmpegPCMAudio("combined.mp3"))
 
-# DISCONNECT command
+# Command to manually disconnect
 @bot.command()
 async def leave(ctx):
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
         await ctx.send("Disconnected from voice channel.")
 
-# Run the bot
 bot.run(TOKEN)
