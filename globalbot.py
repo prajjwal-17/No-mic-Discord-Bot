@@ -25,7 +25,7 @@ class MyBot(commands.Bot):
         self.last_active = {}
 
     async def setup_hook(self):
-        await self.tree.sync()  # sync globally
+        await self.tree.sync()
         print("Global slash commands synced.")
 
 bot = MyBot()
@@ -36,19 +36,6 @@ async def on_ready():
     for g in bot.guilds:
         print(f"- {g.name} ({g.id})")
     check_inactive.start()
-
-# Generate and stretch TTS to 6 seconds
-async def generate_stretched_voice(text, filename="nadeem.mp3", duration=6):
-    tts = edge_tts.Communicate(text, voice="en-IN-PrabhatNeural", rate="+10%")
-    await tts.save(filename)
-
-    stretched = "nadeem_stretched.mp3"
-    subprocess.run([
-        "ffmpeg", "-y", "-i", filename,
-        "-filter_complex", f"apad,atrim=duration={duration}",
-        stretched
-    ])
-    return stretched
 
 # Mix TTS with music
 def mix_with_tune(voice_file, tune_file="tune.mp3", output="combined.mp3"):
@@ -61,7 +48,7 @@ def mix_with_tune(voice_file, tune_file="tune.mp3", output="combined.mp3"):
         output
     ])
 
-# Update activity timestamp
+# Update last activity
 def update_last_active(guild_id):
     bot.last_active[guild_id] = datetime.utcnow()
 
@@ -76,13 +63,10 @@ async def check_inactive():
                 await vc.disconnect()
                 print(f"Disconnected from {guild.name} due to inactivity.")
 
-# Message listener for "no-mic" channel
+# Handle messages in the "no-mic" channel
 @bot.event
 async def on_message(message):
-    if message.author.bot:
-        return
-
-    if message.channel.name != "no-mic":
+    if message.author.bot or message.channel.name != "no-mic":
         return
 
     if not message.author.voice or not message.author.voice.channel:
@@ -104,8 +88,8 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# Slash command to join and play intro
-@bot.tree.command(name="connect", description="Nadeem Man will join and speak.")
+# Slash command for joining and greeting
+@bot.tree.command(name="connect", description="No-Mic Bot will join and speak.")
 async def connect(interaction: discord.Interaction):
     if not interaction.user.voice or not interaction.user.voice.channel:
         await interaction.response.send_message("You must be in a voice channel.", ephemeral=True)
@@ -116,18 +100,20 @@ async def connect(interaction: discord.Interaction):
     if not interaction.guild.voice_client:
         await vc_channel.connect()
 
-    await interaction.response.send_message("I am Nadeem Man, at your service. Speak your heart out. 🔊")
+    await interaction.response.send_message("No-Mic Bot has joined. Speak freely. 🔊")
 
-    text = "I am Nadeem Man, at your service. Speak your heart out."
-    stretched_file = await generate_stretched_voice(text)
-    mix_with_tune(stretched_file, "tune.mp3", "combined.mp3")
+    text = "No-Mic Bot is here. Speak freely."
+    tts = edge_tts.Communicate(text, voice="en-IN-PrabhatNeural", rate="+10%")
+    await tts.save("voice.mp3")
+
+    mix_with_tune("voice.mp3", "tune.mp3", "combined.mp3")
 
     vc = interaction.guild.voice_client
     if not vc.is_playing():
         update_last_active(interaction.guild.id)
         vc.play(FFmpegPCMAudio("combined.mp3"))
 
-# Manual leave command
+# Manual disconnect command
 @bot.command()
 async def leave(ctx):
     if ctx.voice_client:
